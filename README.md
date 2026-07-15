@@ -5,12 +5,7 @@ and logic — lives in `money-tracker.html`. No build step, no dependencies, no 
 
 ## Running it
 
-Just open `money-tracker.html` in a browser. To use it like an app:
-
-- **GitHub Pages**: push this repo, enable Pages, open the hosted URL on your phone,
-  then "Add to Home Screen" from the browser share menu.
-- **Local file**: opening the file directly (`file://...`) also works, but each
-  browser/profile that opens it will have its own separate data (see below).
+Just open [`money-tracker.html`](https://mojo-26.github.io/Mo-Money/) in a browser.
 
 ## Where your data lives
 

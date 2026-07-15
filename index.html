@@ -213,6 +213,19 @@
       <label>Note (optional)</label>
       <textarea id="entry-note" placeholder="What was this for?"></textarea>
     </div>
+    <div class="card" style="margin-bottom:14px;">
+      <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer;">
+        <span>
+          <span class="li-title">Repeats monthly</span><br>
+          <span class="li-sub">Automatically add this again every month</span>
+        </span>
+        <input type="checkbox" id="entry-recurring" style="width:20px; height:20px;">
+      </label>
+      <div id="entry-recurring-day-wrap" style="display:none; margin-top:12px;">
+        <label style="font-size:12px; color:var(--text-secondary); display:block; margin-bottom:6px;">Repeats on day of month</label>
+        <input type="number" min="1" max="31" id="entry-recurring-day">
+      </div>
+    </div>
     <button class="btn primary block" id="save-entry-btn">Save entry</button>
   </section>
 
@@ -383,6 +396,23 @@ function openModal(html){
   document.getElementById('modal-content').innerHTML = html;
   document.getElementById('modal-overlay').classList.add('active');
 }
+function confirmDialog(message, onConfirm, confirmLabel){
+  confirmLabel = confirmLabel || 'Delete';
+  openModal(`
+    <div class="modal-handle"></div>
+    <h3>Are you sure?</h3>
+    <p class="li-sub" style="margin-bottom:18px;">${escapeHtml(message)}</p>
+    <div class="btn-row">
+      <button class="btn ghost block" id="confirm-cancel-btn">Cancel</button>
+      <button class="btn danger block" id="confirm-ok-btn">${escapeHtml(confirmLabel)}</button>
+    </div>
+  `);
+  document.getElementById('confirm-cancel-btn').addEventListener('click', closeModal);
+  document.getElementById('confirm-ok-btn').addEventListener('click', ()=>{
+    closeModal();
+    onConfirm();
+  });
+}
 function closeModal(){
   document.getElementById('modal-overlay').classList.remove('active');
 }
@@ -535,7 +565,9 @@ function renderDashboard(){
   if(recent.length===0){
     recentEl.innerHTML = '<div class="empty">No entries yet this month.</div>';
   }else{
-    recentEl.innerHTML = recent.map(entryRow).join('');
+    recentEl.innerHTML = recent.map(entryRowEditable).join('');
+    recentEl.querySelectorAll('[data-edit]').forEach(el=>el.addEventListener('click', ()=>editEntry(el.dataset.edit)));
+    recentEl.querySelectorAll('[data-del]').forEach(el=>el.addEventListener('click', ()=>deleteEntry(el.dataset.del)));
   }
 }
 
@@ -578,20 +610,44 @@ function renderEntryCategoryChips(){
   });
 }
 function renderAdd(){
-  document.getElementById('entry-date').value = state.selectedDay || todayISO();
+  const dateVal = state.selectedDay || todayISO();
+  document.getElementById('entry-date').value = dateVal;
+  document.getElementById('entry-recurring').checked = false;
+  document.getElementById('entry-recurring-day-wrap').style.display = 'none';
+  document.getElementById('entry-recurring-day').value = parseInt(dateVal.slice(8,10));
   renderEntryCategoryChips();
 }
+document.getElementById('entry-recurring').addEventListener('change', (e)=>{
+  document.getElementById('entry-recurring-day-wrap').style.display = e.target.checked ? 'block' : 'none';
+});
+document.getElementById('entry-date').addEventListener('change', (e)=>{
+  document.getElementById('entry-recurring-day').value = parseInt(e.target.value.slice(8,10));
+});
 document.getElementById('save-entry-btn').addEventListener('click', ()=>{
   const amount = parseFloat(document.getElementById('entry-amount').value);
   if(!amount || amount<=0){ showToast('Enter an amount'); return; }
   const date = document.getElementById('entry-date').value || todayISO();
   const note = document.getElementById('entry-note').value.trim();
   if(!state.entryCategory){ showToast('Pick a category'); return; }
-  DATA.entries.push({id:uid(), type:state.entryType, amount, categoryId:state.entryCategory, date, note});
+  const makeRecurring = document.getElementById('entry-recurring').checked;
+  let recurringId = undefined;
+  if(makeRecurring){
+    const day = Math.min(31, Math.max(1, parseInt(document.getElementById('entry-recurring-day').value)||parseInt(date.slice(8,10))));
+    const cat = catById(state.entryCategory);
+    const rec = {
+      id: uid(), name: note || (cat?cat.name:'Recurring'), amount,
+      categoryId: state.entryCategory, day, startDate: date, active: true, type: state.entryType
+    };
+    DATA.recurring.push(rec);
+    recurringId = rec.id;
+  }
+  const entry = {id:uid(), type:state.entryType, amount, categoryId:state.entryCategory, date, note};
+  if(recurringId) entry.recurringId = recurringId;
+  DATA.entries.push(entry);
   save();
   document.getElementById('entry-amount').value='';
   document.getElementById('entry-note').value='';
-  showToast('Entry saved');
+  showToast(makeRecurring ? 'Entry saved and set to repeat monthly' : 'Entry saved');
   state.year = parseInt(date.slice(0,4)); state.month = parseInt(date.slice(5,7))-1;
   showScreen('dashboard');
 });
@@ -651,10 +707,13 @@ function renderDayList(){
 }
 function entryRowEditable(e){
   const c = catById(e.categoryId);
+  const dateObj = new Date(e.date+'T00:00:00');
+  const dateStr = dateObj.toLocaleDateString(undefined,{month:'short', day:'numeric'});
+  const sub = e.note ? dateStr + ' · ' + escapeHtml(e.note) : dateStr;
   return `<div class="list-item">
     <div class="li-left">
       <div class="dot" style="background:${c?c.color:'#888'}"></div>
-      <div><div class="li-title">${c?escapeHtml(c.name):'Uncategorized'}</div><div class="li-sub">${e.note?escapeHtml(e.note):''}</div></div>
+      <div><div class="li-title">${c?escapeHtml(c.name):'Uncategorized'}</div><div class="li-sub">${sub}</div></div>
     </div>
     <div style="display:flex; align-items:center; gap:10px;">
       <div class="amt ${e.type}">${e.type==='income'?'+':'-'}${fmt(e.amount)}</div>
@@ -664,10 +723,12 @@ function entryRowEditable(e){
   </div>`;
 }
 function deleteEntry(id){
-  if(!confirm('Delete this entry?')) return;
-  DATA.entries = DATA.entries.filter(e=>e.id!==id);
-  save();
-  renderScreen(state.screen);
+  confirmDialog('Delete this entry? This cannot be undone.', ()=>{
+    DATA.entries = DATA.entries.filter(e=>e.id!==id);
+    save();
+    renderScreen(state.screen);
+    showToast('Entry deleted');
+  });
 }
 function editEntry(id){
   const e = DATA.entries.find(x=>x.id===id);
@@ -900,9 +961,10 @@ function renderSettings(){
     }).join('');
     recEl.querySelectorAll('[data-edit-rec]').forEach(el=>el.addEventListener('click',()=>openRecurringModal(el.dataset.editRec)));
     recEl.querySelectorAll('[data-del-rec]').forEach(el=>el.addEventListener('click',()=>{
-      if(!confirm('Delete this recurring expense? Past entries it created will stay.')) return;
-      DATA.recurring = DATA.recurring.filter(r=>r.id!==el.dataset.delRec);
-      save(); renderSettings();
+      confirmDialog('Delete this recurring expense? Past entries it created will stay.', ()=>{
+        DATA.recurring = DATA.recurring.filter(r=>r.id!==el.dataset.delRec);
+        save(); renderSettings();
+      });
     }));
   }
 
@@ -919,9 +981,15 @@ function renderSettings(){
   catEl.querySelectorAll('[data-edit-cat]').forEach(el=>el.addEventListener('click',()=>openCategoryModal(el.dataset.editCat)));
   catEl.querySelectorAll('[data-del-cat]').forEach(el=>el.addEventListener('click',()=>{
     const inUse = DATA.entries.some(e=>e.categoryId===el.dataset.delCat) || DATA.recurring.some(r=>r.categoryId===el.dataset.delCat);
-    if(inUse && !confirm('This category has entries linked to it. Delete anyway? Entries will keep showing as uncategorized.')) return;
-    DATA.categories = DATA.categories.filter(c=>c.id!==el.dataset.delCat);
-    save(); renderSettings();
+    const doDelete = ()=>{
+      DATA.categories = DATA.categories.filter(c=>c.id!==el.dataset.delCat);
+      save(); renderSettings();
+    };
+    if(inUse){
+      confirmDialog('This category has entries linked to it. Delete anyway? Entries will keep showing as uncategorized.', doDelete);
+    }else{
+      doDelete();
+    }
   }));
 }
 
@@ -1047,11 +1115,12 @@ document.getElementById('import-file').addEventListener('change', (e)=>{
   reader.onload = (evt)=>{
     try{
       const parsed = JSON.parse(evt.target.result);
-      if(!confirm('This will replace all current data with the imported backup. Continue?')) return;
-      DATA = Object.assign(defaultData(), parsed);
-      save();
-      showToast('Backup imported');
-      renderScreen(state.screen);
+      confirmDialog('This will replace all current data with the imported backup. Continue?', ()=>{
+        DATA = Object.assign(defaultData(), parsed);
+        save();
+        showToast('Backup imported');
+        renderScreen(state.screen);
+      }, 'Import');
     }catch(err){
       showToast('That file could not be read');
     }
@@ -1060,12 +1129,14 @@ document.getElementById('import-file').addEventListener('change', (e)=>{
   e.target.value = '';
 });
 document.getElementById('reset-btn').addEventListener('click', ()=>{
-  if(!confirm('This will permanently erase all your data. This cannot be undone. Continue?')) return;
-  if(!confirm('Are you absolutely sure? Consider exporting a backup first.')) return;
-  DATA = defaultData();
-  save();
-  showToast('All data erased');
-  renderScreen(state.screen);
+  confirmDialog('This will permanently erase all your data. This cannot be undone. Continue?', ()=>{
+    confirmDialog('Are you absolutely sure? Consider exporting a backup first.', ()=>{
+      DATA = defaultData();
+      save();
+      showToast('All data erased');
+      renderScreen(state.screen);
+    }, 'Erase everything');
+  }, 'Continue');
 });
 
 /* ---------- GOALS (accessible via dashboard card + a small add flow in settings area) ---------- */
@@ -1105,9 +1176,10 @@ function renderGoalsSettings(){
   el.querySelectorAll('[data-contribute]').forEach(b=>b.addEventListener('click', ()=>openContributeModal(b.dataset.contribute)));
   el.querySelectorAll('[data-edit-goal]').forEach(b=>b.addEventListener('click', ()=>openGoalModal(b.dataset.editGoal)));
   el.querySelectorAll('[data-del-goal]').forEach(b=>b.addEventListener('click', ()=>{
-    if(!confirm('Delete this savings goal?')) return;
-    DATA.goals = DATA.goals.filter(g=>g.id!==b.dataset.delGoal);
-    save(); renderGoalsSettings(); renderDashboard();
+    confirmDialog('Delete this savings goal? Its contribution history will be lost.', ()=>{
+      DATA.goals = DATA.goals.filter(g=>g.id!==b.dataset.delGoal);
+      save(); renderGoalsSettings(); renderDashboard();
+    });
   }));
 }
 function openGoalModal(id){
